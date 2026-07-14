@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>PromptRaster</PackageId>
+    <Description>Converts long plain-text prose into OCR-friendly PNG pages when doing so is likely to use fewer AI input tokens than sending the raw text. Uses conservative provider-level character-density heuristics and never alters or discards the source content.</Description>
+    <PackageTags>ai;llm;tokens;prompt;image;png;rasterize;openai;anthropic;gemini;azure-openai;skiasharp</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+    <EnablePackageValidation>true</EnablePackageValidation>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="\" />
+    <None Include="../../icon.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+    <PackageReference Include="SkiaSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PromptRaster.Tests" />
+  </ItemGroup>
+
+</Project>
