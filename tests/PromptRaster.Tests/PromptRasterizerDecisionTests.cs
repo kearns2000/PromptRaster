@@ -6,10 +6,7 @@ namespace PromptRaster.Tests;
 
 public class PromptRasterizerDecisionTests
 {
-    // Dense prose lays out at roughly 7,000-7,400 characters per page with the
-    // default render settings, which sits between the Gemini/OpenAI thresholds
-    // (5,500/6,000) and the Anthropic threshold (8,000).
-    private static string DenseProse(int length = 40_000) => ProseGenerator.Generate(length);
+    private static PromptRasterRequest ThresholdRequest() => new() { TreatAsProse = true };
 
     [Fact]
     public async Task NullText_ThrowsArgumentNullException()
@@ -54,12 +51,13 @@ public class PromptRasterizerDecisionTests
     public async Task UnknownProvider_RemainsText()
     {
         var rasterizer = RasterizerFactory.Create();
+        var text = ProseGenerator.GenerateForThresholdTests();
 
-        var result = await rasterizer.RasterizeAsync(DenseProse(), AiProvider.Unknown);
+        var result = await rasterizer.RasterizeAsync(text, AiProvider.Unknown);
 
         result.Encoding.Should().Be(PromptRasterEncoding.Text);
         result.Decision.Reason.Should().Be(PromptRasterDecisionReason.UnknownProvider);
-        result.OriginalText.Should().Be(DenseProse());
+        result.OriginalText.Should().Be(text);
     }
 
     [Fact]
@@ -78,12 +76,13 @@ public class PromptRasterizerDecisionTests
     [Fact]
     public async Task LongDenseProse_AboveOpenAIThreshold_BecomesImages()
     {
-        var rasterizer = RasterizerFactory.Create();
+        var (rasterizer, text, density) = await ThresholdTestScenario.CreateAsync();
 
-        var result = await rasterizer.RasterizeAsync(DenseProse(), AiProvider.OpenAI);
+        var result = await rasterizer.RasterizeAsync(text, AiProvider.OpenAI, ThresholdRequest());
 
         result.Encoding.Should().Be(PromptRasterEncoding.Images);
         result.Decision.Reason.Should().Be(PromptRasterDecisionReason.Rasterised);
+        result.AverageCharactersPerPage.Should().BeApproximately(density, 1);
         result.AverageCharactersPerPage.Should().BeGreaterThanOrEqualTo(6_000);
         result.Pages.Should().NotBeEmpty();
         result.Pages.Should().AllSatisfy(static p => p.MediaType.Should().Be("image/png"));
@@ -92,13 +91,14 @@ public class PromptRasterizerDecisionTests
     [Fact]
     public async Task LongDenseProse_BelowAnthropicThreshold_RemainsText()
     {
-        var rasterizer = RasterizerFactory.Create();
+        var (rasterizer, text, density) = await ThresholdTestScenario.CreateAsync();
 
-        var result = await rasterizer.RasterizeAsync(DenseProse(), AiProvider.Anthropic);
+        var result = await rasterizer.RasterizeAsync(text, AiProvider.Anthropic, ThresholdRequest());
 
         result.Encoding.Should().Be(PromptRasterEncoding.Text);
         result.Decision.Reason.Should().Be(PromptRasterDecisionReason.InsufficientCharacterDensity);
         result.RequiredCharactersPerPage.Should().Be(8_000);
+        result.AverageCharactersPerPage.Should().BeApproximately(density, 1);
         result.AverageCharactersPerPage.Should().BeLessThan(8_000);
         result.Pages.Should().BeEmpty();
     }
@@ -106,11 +106,10 @@ public class PromptRasterizerDecisionTests
     [Fact]
     public async Task Gemini_UsesItsDefaultThreshold_WhereAnthropicDoesNot()
     {
-        var rasterizer = RasterizerFactory.Create();
-        var text = DenseProse();
+        var (rasterizer, text, _) = await ThresholdTestScenario.CreateAsync();
 
-        var geminiResult = await rasterizer.RasterizeAsync(text, AiProvider.Gemini);
-        var anthropicResult = await rasterizer.RasterizeAsync(text, AiProvider.Anthropic);
+        var geminiResult = await rasterizer.RasterizeAsync(text, AiProvider.Gemini, ThresholdRequest());
+        var anthropicResult = await rasterizer.RasterizeAsync(text, AiProvider.Anthropic, ThresholdRequest());
 
         geminiResult.Encoding.Should().Be(PromptRasterEncoding.Images);
         geminiResult.RequiredCharactersPerPage.Should().Be(5_500);
@@ -123,7 +122,10 @@ public class PromptRasterizerDecisionTests
         var rasterizer = RasterizerFactory.Create(static options =>
             options.GeminiMinimumCharactersPerPage = 20_000);
 
-        var result = await rasterizer.RasterizeAsync(DenseProse(), AiProvider.Gemini);
+        var result = await rasterizer.RasterizeAsync(
+            ProseGenerator.GenerateForThresholdTests(45_000),
+            AiProvider.Gemini,
+            ThresholdRequest());
 
         result.Encoding.Should().Be(PromptRasterEncoding.Text);
         result.Decision.Reason.Should().Be(PromptRasterDecisionReason.InsufficientCharacterDensity);
@@ -133,14 +135,13 @@ public class PromptRasterizerDecisionTests
     [Fact]
     public async Task RequestThreshold_OverridesProviderDefault()
     {
-        var rasterizer = RasterizerFactory.Create();
-        var text = DenseProse();
+        var (rasterizer, text, _) = await ThresholdTestScenario.CreateAsync();
 
-        var withDefault = await rasterizer.RasterizeAsync(text, AiProvider.Anthropic);
+        var withDefault = await rasterizer.RasterizeAsync(text, AiProvider.Anthropic, ThresholdRequest());
         var withOverride = await rasterizer.RasterizeAsync(
             text,
             AiProvider.Anthropic,
-            new PromptRasterRequest { MinimumCharactersPerPage = 6_000 });
+            ThresholdRequest() with { MinimumCharactersPerPage = 6_000 });
 
         withDefault.Encoding.Should().Be(PromptRasterEncoding.Text);
         withOverride.Encoding.Should().Be(PromptRasterEncoding.Images);
@@ -153,7 +154,7 @@ public class PromptRasterizerDecisionTests
         var rasterizer = RasterizerFactory.Create();
 
         var result = await rasterizer.RasterizeAsync(
-            DenseProse(),
+            ProseGenerator.GenerateForThresholdTests(),
             AiProvider.OpenAI,
             new PromptRasterRequest { Mode = PromptRasterMode.Never });
 
@@ -198,11 +199,12 @@ public class PromptRasterizerDecisionTests
     public async Task MaximumPageCount_PreventsAutomaticRasterisation()
     {
         var rasterizer = RasterizerFactory.Create();
+        var text = ProseGenerator.Generate(200_000, sentencesPerParagraph: 40);
 
         var result = await rasterizer.RasterizeAsync(
-            DenseProse(),
+            text,
             AiProvider.OpenAI,
-            new PromptRasterRequest { MaximumPages = 2 });
+            ThresholdRequest() with { MaximumPages = 2 });
 
         result.Encoding.Should().Be(PromptRasterEncoding.Text);
         result.Decision.Reason.Should().Be(PromptRasterDecisionReason.MaximumPageCountExceeded);
@@ -219,9 +221,9 @@ public class PromptRasterizerDecisionTests
         });
 
         var result = await rasterizer.RasterizeAsync(
-            DenseProse(),
+            ProseGenerator.Generate(200_000, sentencesPerParagraph: 40),
             AiProvider.OpenAI,
-            new PromptRasterRequest { Mode = PromptRasterMode.Always });
+            ThresholdRequest() with { Mode = PromptRasterMode.Always });
 
         result.Encoding.Should().Be(PromptRasterEncoding.Text);
         result.Decision.Reason.Should().Be(PromptRasterDecisionReason.MaximumPageCountExceeded);
@@ -262,15 +264,16 @@ public class PromptRasterizerDecisionTests
     [Fact]
     public async Task DecisionDescriptions_ContainUsefulValues()
     {
-        var rasterizer = RasterizerFactory.Create();
+        var (rasterizer, text, _) = await ThresholdTestScenario.CreateAsync();
 
         var tooShort = await rasterizer.RasterizeAsync("Too short.", AiProvider.OpenAI);
         tooShort.Decision.Description.Should().Contain("5,000").And.Contain("10");
 
-        var belowThreshold = await rasterizer.RasterizeAsync(DenseProse(), AiProvider.Anthropic);
+        var belowThreshold = await rasterizer.RasterizeAsync(text, AiProvider.Anthropic, ThresholdRequest());
         belowThreshold.Decision.Description.Should().Contain("Anthropic").And.Contain("8,000");
 
-        var rasterised = await rasterizer.RasterizeAsync(DenseProse(), AiProvider.OpenAI);
+        var rasterised = await rasterizer.RasterizeAsync(text, AiProvider.OpenAI, ThresholdRequest());
+        rasterised.Decision.Reason.Should().Be(PromptRasterDecisionReason.Rasterised);
         rasterised.Decision.Description.Should().Contain("OpenAI").And.Contain("6,000");
     }
 
@@ -287,10 +290,9 @@ public class PromptRasterizerDecisionTests
     [Fact]
     public async Task Result_AlwaysPreservesOriginalText()
     {
-        var rasterizer = RasterizerFactory.Create();
-        var text = DenseProse();
+        var (rasterizer, text, _) = await ThresholdTestScenario.CreateAsync();
 
-        var imageResult = await rasterizer.RasterizeAsync(text, AiProvider.OpenAI);
+        var imageResult = await rasterizer.RasterizeAsync(text, AiProvider.OpenAI, ThresholdRequest());
         var textResult = await rasterizer.RasterizeAsync(text, AiProvider.Unknown);
 
         imageResult.OriginalText.Should().BeSameAs(text);

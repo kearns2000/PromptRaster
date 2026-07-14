@@ -33,4 +33,10 @@ internal static class ProseGenerator
 
         return builder.ToString();
     }
+
+    /// <summary>
+    /// Long, paragraph-sparse prose for cross-platform threshold tests.
+    /// </summary>
+    public static string GenerateForThresholdTests(int targetLength = 80_000) =>
+        Generate(targetLength, sentencesPerParagraph: 200);
 }
