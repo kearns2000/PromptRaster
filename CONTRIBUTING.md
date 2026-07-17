@@ -1,6 +1,6 @@
 # Contributing to PromptRaster
 
-Thanks for your interest in contributing. PromptRaster is a small, focused library — contributions that improve the rasterisation decision, layout fidelity, or provider heuristics are welcome.
+Thanks for your interest in contributing. PromptRaster is a small, focused library - contributions that improve the rasterisation decision, layout fidelity, or provider heuristics are welcome.
 
 ## Before you start
 
@@ -76,10 +76,10 @@ The layout engine's contract is an invariant verified by tests: page source rang
 ## Code guidelines
 
 - Use nullable reference types; avoid suppressing null warnings without reason.
-- The build treats warnings as errors — keep it that way.
+- The build treats warnings as errors - keep it that way.
 - Use primary constructors for injected dependencies; register stateless services as singletons.
 - Dispose every SkiaSharp resource; services must remain safe for concurrent use.
-- Never log source text, snippets, or image bytes — metadata only.
+- Never log source text, snippets, or image bytes - metadata only.
 - No token-estimation cleverness: the decision uses measured character density only.
 - Match existing naming and file structure.
 

@@ -1,14 +1,29 @@
 # Publishing to NuGet
 
-PromptRaster publishes two packages — `PromptRaster` and `PromptRaster.MicrosoftExtensionsAI` — from GitHub Actions when a version tag is pushed. The workflow is [`release.yml`](.github/workflows/release.yml).
+PromptRaster publishes two packages - `PromptRaster` and `PromptRaster.MicrosoftExtensionsAI` - from GitHub Actions when a version tag is pushed. The workflow is [`ci.yml`](.github/workflows/ci.yml).
+
+Publishing uses [NuGet trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing). No long-lived API keys are stored in the repo.
 
 ## One-time setup (maintainers)
 
-### 1. Create a NuGet API key
+### 1. Create a trusted publishing policy on nuget.org
 
 1. Sign in at [nuget.org](https://www.nuget.org)
-2. Click your username → **API Keys** → **Create**
-3. Scope the key to push for the `PromptRaster*` glob pattern
+2. Click your username → **Trusted Publishing**
+3. **Add new policy** with:
+
+| Field | Value |
+|-------|-------|
+| Policy name | `promptraster` (or any label) |
+| Package owner | Your nuget.org account |
+| Repository owner | `kearns2000` |
+| Repository | `PromptRaster` |
+| Workflow file | `ci.yml` |
+| Environment | *(leave empty)* |
+
+The workflow file must be exactly `ci.yml` - not the full path.
+
+Docs: [Trusted Publishing on Microsoft Learn](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing)
 
 ### 2. Add a GitHub repository secret
 
@@ -16,11 +31,15 @@ PromptRaster publishes two packages — `PromptRaster` and `PromptRaster.Microso
 
 | Name | Value |
 |------|-------|
-| `NUGET_API_KEY` | The API key created above |
+| `NUGET_USER` | Your **nuget.org username** (profile name, not your email) |
+
+Trusted publishing still needs your NuGet username for the login step; the temporary API key comes from OIDC.
+
+You do **not** need a `NUGET_API_KEY` secret.
 
 ### 3. Publish the first version
 
-1. Ensure the code on `main` is what you want to ship (CI green)
+1. Ensure `ci.yml` is on `main`
 2. Create and push a version tag:
 
 ```bash
@@ -28,7 +47,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-3. Watch **Actions → Release** on GitHub
+3. Watch **Actions → ci** on GitHub
 4. After validation, the packages appear at:
    - https://www.nuget.org/packages/PromptRaster
    - https://www.nuget.org/packages/PromptRaster.MicrosoftExtensionsAI
@@ -45,12 +64,13 @@ git tag v0.1.1
 git push origin v0.1.1
 ```
 
-Each tag triggers build → test → pack → push to NuGet → GitHub release with the `.nupkg` and `.snupkg` files attached.
+Each tag triggers build → test → pack → trusted publish → GitHub release with the `.nupkg` and `.snupkg` files attached.
 
 ## Notes
 
 - Tags must match `v*` (e.g. `v0.1.0`, `v1.2.3`) and follow semantic versioning
-- NuGet does not allow republishing the same version — bump the version for every release
+- NuGet does not allow republishing the same version - bump the version for every release
 - Releases never run from pull requests; only tag pushes trigger publishing
-- Symbol packages (`.snupkg`) are pushed automatically alongside the main packages
+- The temporary API key from `NuGet/login@v1` expires in about an hour
+- Do **not** store a `NUGET_API_KEY` secret - trusted publishing replaces that
 - Package readme images must use an [allowlisted domain](https://learn.microsoft.com/en-us/nuget/nuget-org/package-readme-on-nuget-org#allowed-domains-for-images) (e.g. `raw.githubusercontent.com`). Relative paths like `icon.png` do not render on nuget.org

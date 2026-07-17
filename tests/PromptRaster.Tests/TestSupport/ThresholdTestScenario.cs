@@ -2,7 +2,7 @@ namespace PromptRaster.Tests.TestSupport;
 
 /// <summary>
 /// Builds a rasteriser/text pair whose measured characters-per-page lands in the
-/// 6,000–7,999 band on the current platform. Linux and macOS use different
+/// 6,000-7,999 band on the current platform. Linux and macOS use different
 /// <see cref="SkiaSharp.SKTypeface.Default"/> metrics, so a fixed prose length
 /// is not reliable.
 /// </summary>

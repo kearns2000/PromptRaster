@@ -17,7 +17,7 @@ Token savings are not guaranteed. Whether images help depends on the model’s i
 
 ## Why PromptRaster exists
 
-.NET applications often assemble large, relatively stable context — documentation, schemas, logs, older supporting material — inside ASP.NET Core apps, workers, Azure Functions, agents, and document-processing pipelines. Those hosts already use Microsoft.Extensions.AI and dependency injection. They rarely want a local HTTP proxy in the middle of the request path.
+.NET applications often assemble large, relatively stable context - documentation, schemas, logs, older supporting material - inside ASP.NET Core apps, workers, Azure Functions, agents, and document-processing pipelines. Those hosts already use Microsoft.Extensions.AI and dependency injection. They rarely want a local HTTP proxy in the middle of the request path.
 
 PromptRaster is built for that setting:
 
@@ -184,7 +184,7 @@ Published numerical savings claims are deferred until this repository contains a
 
 | Field | Value |
 |---|---|
-| Model and provider | *Pending — record the exact model id and provider* |
+| Model and provider | *Pending - record the exact model id and provider* |
 | Date tested | *Pending* |
 | Rendering dimensions | Default 1024×1536, font size 17, padding 48 (or the profile under test) |
 | Source character count | Measure the fixture text length |
@@ -192,7 +192,7 @@ Published numerical savings claims are deferred until this repository contains a
 | Reported image tokens | From the provider usage API |
 | Result quality test | Task-specific rubric (summarisation / extraction accuracy) against a text baseline |
 | Prompt caching state | Explicitly on or off; do not mix |
-| Benchmark command | *Pending — e.g. `dotnet run --project benchmarks/PromptRaster.Evaluations`* |
+| Benchmark command | *Pending - e.g. `dotnet run --project benchmarks/PromptRaster.Evaluations`* |
 
 Until those fixtures land, treat any external savings figures as non-authoritative. Density thresholds in `PromptRasterOptions` are conservative heuristics, not measured guarantees.
 
