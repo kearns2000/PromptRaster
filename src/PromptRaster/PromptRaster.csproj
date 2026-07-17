@@ -4,7 +4,7 @@
     <IsPackable>true</IsPackable>
     <PackageId>PromptRaster</PackageId>
     <Description>A .NET-native, policy-driven visual context encoder. Renders bulky, stable text as OCR-friendly PNG pages for multimodal models while keeping precise or sensitive content as ordinary text. Provider-neutral core with no Microsoft.Extensions.AI dependency.</Description>
-    <PackageTags>ai;llm;tokens;prompt;image;png;rasterize;visual-context;skiasharp;dotnet</PackageTags>
+    <PackageTags>ai;artificial-intelligence;llm;large-language-model;generative-ai;genai;multimodal;vision;vision-language-model;vlm;tokens;token-optimization;token-saving;input-tokens;context;context-window;prompt;prompt-engineering;prompt-compression;optical-context;visual-context;ocr;ocr-friendly;image;png;raster;rasterize;rasterisation;rasterization;text-to-image;document;document-summarisation;document-summarization;summarisation;summarization;classification;policy-review;transcript;email;information-extraction;openai;gpt;gpt-4o;azure-openai;azure;anthropic;claude;gemini;google-gemini;skiasharp;dotnet;dotnet8;csharp;nuget;microsoft-extensions;dependency-injection;di</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
     <EnablePackageValidation>true</EnablePackageValidation>

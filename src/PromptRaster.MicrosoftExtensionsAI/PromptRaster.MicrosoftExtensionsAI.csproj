@@ -4,7 +4,7 @@
     <IsPackable>true</IsPackable>
     <PackageId>PromptRaster.MicrosoftExtensionsAI</PackageId>
     <Description>Microsoft.Extensions.AI integration for PromptRaster. Provides DelegatingChatClient middleware and an explicit content factory so applications can mark bulky context for PNG encoding while keeping precise text as TextContent.</Description>
-    <PackageTags>ai;llm;tokens;prompt;image;png;rasterize;microsoft-extensions-ai;ichatclient;middleware</PackageTags>
+    <PackageTags>ai;artificial-intelligence;llm;large-language-model;generative-ai;genai;multimodal;vision;vision-language-model;vlm;tokens;token-optimization;token-saving;input-tokens;context;context-window;prompt;prompt-engineering;prompt-compression;optical-context;visual-context;ocr;ocr-friendly;image;png;raster;rasterize;rasterisation;rasterization;text-to-image;document;openai;gpt;azure-openai;anthropic;claude;gemini;microsoft-extensions-ai;microsoft.extensions.ai;ichatclient;chatclient;middleware;delegatingchatclient;aicontent;textcontent;datacontent;dotnet;dotnet8;csharp;nuget;dependency-injection;di;aspnetcore</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
     <EnablePackageValidation>true</EnablePackageValidation>
