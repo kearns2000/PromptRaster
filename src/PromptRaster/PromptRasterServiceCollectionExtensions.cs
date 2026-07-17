@@ -21,9 +21,13 @@ public static class PromptRasterServiceCollectionExtensions
         services.TryAddSingleton<Microsoft.Extensions.Options.IValidateOptions<PromptRasterOptions>, PromptRasterOptionsValidator>();
 
         services.TryAddSingleton<ITextContentClassifier, TextContentClassifier>();
+        services.TryAddSingleton<IExactContentDetector, ExactContentDetector>();
+        services.TryAddSingleton<IModelProfileProvider, DefaultModelProfileProvider>();
+        services.TryAddSingleton<IRasterisationPolicy, DefaultRasterisationPolicy>();
         services.TryAddSingleton<ITextPageLayoutEngine, SkiaTextPageLayoutEngine>();
         services.TryAddSingleton<ITextImageRenderer, SkiaTextImageRenderer>();
         services.TryAddSingleton<IProviderThresholdResolver, ProviderThresholdResolver>();
+        services.TryAddSingleton<IPromptRasterCache>(NullPromptRasterCache.Instance);
         services.TryAddSingleton<IPromptRasterizer, PromptRasterizer>();
 
         return services;

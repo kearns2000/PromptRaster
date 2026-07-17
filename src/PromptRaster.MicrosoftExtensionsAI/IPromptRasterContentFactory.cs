@@ -7,6 +7,8 @@ namespace PromptRaster.MicrosoftExtensionsAI;
 /// letting PromptRaster decide whether a document travels as text or as PNG pages.
 /// Rasterisation is always explicit: only the supplied document text is ever
 /// converted, never arbitrary user messages.
+/// Prefer <see cref="PromptRasterChatClient"/> with <see cref="RasterTextContent"/>
+/// when integrating through an <see cref="IChatClient"/> pipeline.
 /// </summary>
 public interface IPromptRasterContentFactory
 {

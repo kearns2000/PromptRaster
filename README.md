@@ -6,233 +6,236 @@
 [![.NET](https://img.shields.io/badge/.NET-8.0-512BD4?style=flat&logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/download/dotnet/8.0)
 [![Build](https://github.com/kearns2000/PromptRaster/actions/workflows/build.yml/badge.svg)](https://github.com/kearns2000/PromptRaster/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/github/license/kearns2000/PromptRaster)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-xUnit-5C2D91?style=flat&logo=xunit)](tests/PromptRaster.Tests)
 
 **Target framework:** `net8.0` · **Language:** C# 12 · **Test runner:** xUnit
 
-**PromptRaster turns long prose into cheaper pixels.**
+PromptRaster is a .NET-native visual context encoder for Microsoft.Extensions.AI applications. It gives application developers explicit, policy-controlled ways to represent bulky, stable text as image context while preserving precise or sensitive content as normal text.
 
-PromptRaster converts long plain-text content into one or more OCR-friendly PNG images when doing so is likely to use fewer AI input tokens than sending the original text.
+It converts selected text into compact PNG pages so multimodal language models can consume that material through vision input. The technique overlaps with prior optical-context work such as [pxpipe](https://github.com/teamchong/pxpipe); PromptRaster does not claim to invent that idea. Its product boundary is in-process .NET applications, dependency injection, and Microsoft.Extensions.AI middleware under application policy.
 
-> PromptRaster uses conservative character-density heuristics to decide when long prose is likely to cost fewer AI input tokens as an image. It keeps the original text when the content is short, structured, accuracy-sensitive, or insufficiently dense.
+Token savings are not guaranteed. Whether images help depends on the model’s image token calculation, rendering dimensions, text density, prompt caching, the type of content, the model’s ability to read dense text from images, and current provider pricing. Rasterisation is lossy: it is unsuitable when the model must recover content byte for byte.
 
-PromptRaster never sends anything to an AI provider itself, and it never modifies, truncates, or discards your source content. It only decides, lays out, and renders — you stay in control of what actually gets sent.
+## Why PromptRaster exists
 
-## Why images can cost fewer tokens
+.NET applications often assemble large, relatively stable context — documentation, schemas, logs, older supporting material — inside ASP.NET Core apps, workers, Azure Functions, agents, and document-processing pipelines. Those hosts already use Microsoft.Extensions.AI and dependency injection. They rarely want a local HTTP proxy in the middle of the request path.
 
-Text models charge roughly one token per 3–4 characters of English text, so a 40,000-character document costs on the order of 10,000+ input tokens. Multimodal models charge for images by tile or by resolution, largely independent of how much text the image contains. A 1024×1536 page rendered at a readable 17 px costs a fixed number of image tokens regardless of whether it holds 2,000 or 8,000 characters.
+PromptRaster is built for that setting:
 
-When a page carries enough characters, the image representation crosses over and becomes cheaper than the text representation. PromptRaster measures the actual character density your text achieves after layout and compares it against a conservative per-provider threshold. Long, dense prose may reduce input usage by approximately 20–50%, depending on the model and image-token rules.
+- It runs in-process with no outbound network calls of its own.
+- The core renderer stays provider-neutral. Azure OpenAI and other providers are reached through `IChatClient`, not through PromptRaster.Core coupling.
+- Rasterisation is opt-in and policy-driven. Callers mark eligible content; ordinary `TextContent` stays text.
+- Unsupported models, failed rendering, policy rejection, and uneconomical density fall back to ordinary text unless strict mode is enabled.
+- Decisions and timings are observable through `ILogger` and OpenTelemetry-compatible activities/metrics without logging prompt text or image bytes.
 
-**Savings are estimates, not guarantees.** Provider pricing and image-token rules change, model OCR accuracy varies, and dense pages can degrade answer quality for some tasks. Benchmark against your real workload — with your model, your documents, and your quality bar — before enabling this in production.
+## How it works
 
-## Limitations
+```text
+Application content
+    -> Rasterisation policy
+    -> Keep as text or render as PNG
+    -> Microsoft.Extensions.AI ChatMessage
+    -> Multimodal IChatClient
+```
 
-- The model must *read* your text via OCR instead of receiving it losslessly. Reading accuracy is high for clean prose on modern multimodal models, but it is not perfect.
-- Character-exact tasks (quoting, extracting identifiers, diffing) should not use rasterised input. PromptRaster's classifier refuses such content in automatic mode for this reason.
-- Thresholds are conservative heuristics at the provider level. PromptRaster deliberately does not do exact token accounting, model-specific pricing lookups, or remote catalogue fetching.
-- Rendered pages are larger *payloads* (bytes on the wire) than the text they replace, even when they are cheaper in tokens.
+```mermaid
+flowchart LR
+    A[Application content] --> B{Rasterisation policy}
+    B -->|Reject or uneconomical| C[TextContent]
+    B -->|Approved| D[PNG pages]
+    C --> E[ChatMessage]
+    D --> E
+    E --> F[Multimodal IChatClient]
+```
 
-## What it is good for
+Callers should mark appropriate content for rasterisation with `RasterTextContent` (or `chatMessage.AddRasterText(...)`). Normal `TextContent` remains normal text. The middleware inspects copies of the supplied messages; it does not mutate caller-owned collections.
 
-Automatic rasterisation suits tasks where the model reads and reasons over long prose:
+The core package can also be used directly through `IPromptRasterizer` when you are not building an `IChatClient` pipeline.
 
-- document summarisation
-- classification
-- policy review
-- article analysis
-- transcripts
-- long email bodies
-- broad information extraction
+## Suitable content
 
-## What it refuses (in automatic mode)
+PromptRaster is intended for bulky, stable context where approximate reading is acceptable: documentation, API or schema descriptions, historical logs, older supporting material, and large descriptive instructions that the model should understand rather than reproduce character by character.
 
-Automatic rasterisation is disabled when the content is likely to be:
+## Unsuitable content
 
-- source code
-- JSON
-- XML
-- YAML
-- tables (CSV, pipe-delimited, tabular data)
-- configuration
-- stack traces
-- exact quotations
-- identifiers where character accuracy is critical
+Do not rasterise secrets, access tokens, hashes, exact identifiers, file paths that must be reproduced exactly, financial values requiring exact recovery, structured output the model must copy byte for byte, or current user instructions where small wording changes could alter the task.
 
-These are accuracy-sensitive: a single misread character changes meaning. They stay as text unless you explicitly force rasterisation with `PromptRasterMode.Always`.
+Those values should remain as text because vision encoding is lossy. A single misread character can change meaning, and heuristic “exact content” detectors are a safety aid, not a complete security control. Applications can supply their own `IRasterisationPolicy` or `IExactContentDetector` when the defaults are insufficient.
 
 ## Installation
 
 ```bash
 dotnet add package PromptRaster
-```
-
-For the Microsoft.Extensions.AI integration:
-
-```bash
 dotnet add package PromptRaster.MicrosoftExtensionsAI
 ```
 
-## Dependency injection setup
+## Microsoft.Extensions.AI example
+
+Register the core services, then add PromptRaster to an `IChatClient` pipeline. Only marked content is considered for rasterisation.
 
 ```csharp
-services.AddPromptRaster();
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using PromptRaster;
+using PromptRaster.MicrosoftExtensionsAI;
+
+var services = new ServiceCollection()
+    .AddPromptRasterMicrosoftExtensionsAI(options =>
+    {
+        options.MinimumTextLength = 4_000;
+        options.FallbackToText = true;
+    })
+    .BuildServiceProvider();
+
+IPromptRasterizer rasterizer = services.GetRequiredService<IPromptRasterizer>();
+
+// providerClient is your Azure OpenAI / OpenAI / other IChatClient.
+IChatClient client = providerClient
+    .AsBuilder()
+    .UsePromptRaster(rasterizer, options =>
+    {
+        options.MinimumCharacterCount = 4_000;
+        options.FallbackToText = true;
+        options.Provider = AiProvider.AzureOpenAI;
+    })
+    .Build();
+
+var message = new ChatMessage(ChatRole.User, "Summarise the attached background material.");
+message.Contents.Add(new TextContent("Focus on risks and open questions."));
+message.AddRasterText(backgroundDocument);
+
+ChatResponse response = await client.GetResponseAsync([message], cancellationToken: stopToken);
 ```
 
-Or with options:
+The instruction and other `TextContent` items stay as text. `RasterTextContent` becomes one or more `DataContent` items with media type `image/png` when policy approves, or falls back to `TextContent` otherwise.
+
+You can also build content explicitly with `IPromptRasterContentFactory` when you prefer not to use middleware:
+
+```csharp
+services.AddPromptRasterMicrosoftExtensionsAI();
+
+var content = await promptRasterContentFactory.CreateAsync(
+    "Summarise the following document.",
+    documentText,
+    AiProvider.OpenAI,
+    cancellationToken: stopToken);
+
+var response = await chatClient.GetResponseAsync(
+    new ChatMessage(ChatRole.User, content.ToList()),
+    cancellationToken: stopToken);
+```
+
+## Policy and fallback
+
+Rasterisation is opt-in by default. In the chat pipeline, only `RasterTextContent` is eligible. The default `IRasterisationPolicy` then applies length, model-profile, structured-content, exact-content, page-limit, and density checks.
+
+`IPromptRasterizer` always returns a text result for policy rejections. Layout or PNG rendering failures fall back to ordinary text when `PromptRasterOptions.FallbackToText` is enabled. In the chat middleware, set `StrictMode` on `PromptRasterChatClientOptions` to throw `PromptRasterException` instead of converting rejected or failed marked content to `TextContent`.
+
+`PromptRasterMode.Always` skips structured-content and exact-content heuristics; use it only when you intentionally accept that risk.
 
 ```csharp
 services.AddPromptRaster(options =>
 {
-    options.MinimumTextLength = 6_000;
-    options.MaximumPages = 10;
+    options.DetectExactContent = true;
+    options.DetectStructuredContent = true;
+    options.FallbackToText = true;
+    options.ModelProfiles.Add(new ModelProfile
+    {
+        ModelId = "gpt-4.1",
+        Enabled = true,
+        Provider = AiProvider.OpenAI,
+        MinimumCharactersPerPage = 6_000,
+        EvaluationNotes = "Validate OCR quality on your own documents before production use.",
+    });
 });
 ```
 
-All services are stateless, thread-safe singletons. Options are validated at startup; invalid values (non-positive dimensions, padding that leaves no drawable area, thresholds below 1,000 characters, and so on) fail fast with a descriptive message.
-
-## Basic usage
+## Direct core usage
 
 ```csharp
 public sealed class DocumentAnalyzer(IPromptRasterizer rasterizer)
 {
-    public async Task AnalyzeAsync(string documentText, CancellationToken cancellationToken)
+    public async Task AnalyzeAsync(string documentText, CancellationToken stopToken)
     {
         PromptRasterResult result = await rasterizer.RasterizeAsync(
             documentText,
             AiProvider.OpenAI,
-            cancellationToken: cancellationToken);
+            cancellationToken: stopToken);
 
         if (result.Encoding == PromptRasterEncoding.Images)
         {
             foreach (PromptRasterPage page in result.Pages)
             {
-                // page.Data is a PNG; page.MediaType is "image/png".
-                // page.SourceStartIndex / page.SourceLength map back to the source text.
+                // page.Data is PNG; page.MediaType is "image/png".
             }
         }
         else
         {
-            // result.OriginalText is your input, unchanged.
+            // result.OriginalText is unchanged.
         }
-
-        Console.WriteLine(result.Decision.Description);
-        // e.g. "The content was kept as text because its average density was
-        //       4,920 characters per page, below the OpenAI threshold of 6,000."
     }
 }
 ```
 
-The result always includes the decision reason, the source SHA-256 (uppercase hex, for traceability), the character count, the page count, and the measured character density.
+## Benchmarks
 
-## Microsoft.Extensions.AI usage
+Published numerical savings claims are deferred until this repository contains a reproducible evaluation project.
 
-The integration package provides `IPromptRasterContentFactory`, which builds `AIContent` items ready for any `IChatClient`. Rasterisation is explicit — the factory only ever converts the document you pass it, never arbitrary chat messages.
+**Methodology (results pending):**
 
-```csharp
-services.AddPromptRasterMicrosoftExtensionsAI();
-```
-
-```csharp
-var content = await promptRasterContentFactory.CreateAsync(
-    "Summarise the following document.",
-    documentText,
-    AiProvider.OpenAI,
-    cancellationToken: cancellationToken);
-
-var response = await chatClient.GetResponseAsync(
-    new ChatMessage(ChatRole.User, content),
-    cancellationToken: cancellationToken);
-```
-
-The instruction is always included as text. When PromptRaster decides on text, the document follows as text content. When it decides on images, a short note tells the model to read all pages in numerical order, followed by one `DataContent` PNG per page.
-
-## Provider thresholds
-
-PromptRaster rasterises only when the *average characters per rendered page* meets the provider's threshold:
-
-| Provider | Default minimum characters per page |
+| Field | Value |
 |---|---|
-| OpenAI | 6,000 |
-| Azure OpenAI | 6,000 |
-| Gemini | 5,500 |
-| Anthropic | 8,000 |
-| Unknown | never automatically rasterised |
+| Model and provider | *Pending — record the exact model id and provider* |
+| Date tested | *Pending* |
+| Rendering dimensions | Default 1024×1536, font size 17, padding 48 (or the profile under test) |
+| Source character count | Measure the fixture text length |
+| Estimated or reported text tokens | From the provider usage API or an agreed estimator |
+| Reported image tokens | From the provider usage API |
+| Result quality test | Task-specific rubric (summarisation / extraction accuracy) against a text baseline |
+| Prompt caching state | Explicitly on or off; do not mix |
+| Benchmark command | *Pending — e.g. `dotnet run --project benchmarks/PromptRaster.Evaluations`* |
 
-These defaults are intentionally conservative: they only trigger when the saving is likely to be comfortably real, not marginal.
+Until those fixtures land, treat any external savings figures as non-authoritative. Density thresholds in `PromptRasterOptions` are conservative heuristics, not measured guarantees.
 
-### Overriding thresholds
+## Related work
 
-Globally, via options:
+[pxpipe](https://github.com/teamchong/pxpipe) applies optical context compression through a TypeScript proxy and library aimed largely at AI coding workflows. PromptRaster focuses on in-process .NET applications. It is designed around Microsoft.Extensions.AI abstractions, dependency injection, and middleware. It uses explicit application policy rather than automatically rewriting an entire request. It aims to support Azure OpenAI and other providers exposed through `IChatClient` without coupling the core renderer to a provider. Both approaches are lossy and unsuitable for content requiring byte-exact recovery.
 
-```csharp
-services.AddPromptRaster(options =>
-{
-    options.AnthropicMinimumCharactersPerPage = 7_000;
-});
-```
+PromptRaster is not “pxpipe for .NET”. The shared idea is representing bulky text as images for multimodal models; the product boundary is policy-driven encoding inside .NET application hosts.
 
-Per request:
+## Status and roadmap
 
-```csharp
-var result = await rasterizer.RasterizeAsync(text, AiProvider.Anthropic,
-    new PromptRasterRequest { MinimumCharactersPerPage = 7_000 });
-```
+### Implemented
 
-## Forcing or disabling rasterisation
+- Provider-neutral core renderer (`PromptRaster` package) with SkiaSharp PNG output
+- Conservative automatic decisioning via `IRasterisationPolicy`, content classification, and exact-content heuristics
+- Model profiles (`ModelProfile` / `IModelProfileProvider`) with unknown-model fallback to text
+- Optional page cache (`IPromptRasterCache`) with stable keys; no cache of secrets by default
+- Structured logging plus Activity/Meter instrumentation without prompt or image payloads
+- Microsoft.Extensions.AI content factory (`IPromptRasterContentFactory`)
+- `DelegatingChatClient` middleware (`UsePromptRaster`) with `RasterTextContent` opt-in marking
+- Fallback-to-text behaviour and optional strict mode on the chat middleware
+- Deterministic PNG bytes for identical text and render settings (covered by tests)
 
-```csharp
-// Always rasterise (skips classification and thresholds; still enforces
-// the absolute page limit and rejects empty input):
-new PromptRasterRequest { Mode = PromptRasterMode.Always }
+### Roadmap
 
-// Never rasterise (returns text without any layout work):
-new PromptRasterRequest { Mode = PromptRasterMode.Never }
+- `PromptRaster.Evaluations` benchmark project with reproducible fixtures and published results
+- Richer estimated image-token helpers per model family (still without hardcoding transient prices into the core)
+- Additional built-in model profiles contributed from evaluation notes
+- Optional application-supplied exact-content classifiers beyond the default heuristics
 
-// Skip content-type detection but keep the density check:
-new PromptRasterRequest { TreatAsProse = true }
-```
-
-## The decision algorithm (Auto mode)
-
-1. Empty or whitespace-only input stays text.
-2. Unknown providers stay text.
-3. Input shorter than `MinimumTextLength` (default 5,000) stays text.
-4. Content classified as structured, code, tabular, or identifier-heavy stays text.
-5. The text is laid out into 1024×1536 pages using measured pixel widths.
-6. More than `MaximumPages` (default 8) stays text.
-7. Rasterise only if `characters ÷ pages ≥ provider threshold`; otherwise stay text.
-
-PNG encoding happens only after the decision to return images, and every decision is explained in `Result.Decision.Description`.
-
-## Security and privacy
-
-- PromptRaster performs no network calls of any kind. All classification, layout, and rendering happen in-process.
-- Logging emits metadata only (provider, decision reason, counts, sizes, timings). The source text, snippets of it, and image bytes are never logged.
-- The `SourceSha256` hash lets you correlate results with source documents without storing the text.
-- Remember that a rendered page *contains* the source text as pixels. Treat page images with the same confidentiality as the text itself.
+Not in scope for this library’s positioning: a standalone reverse proxy, a dashboard, or an automatic conversation-history compressor.
 
 ## Architecture
 
-The solution contains two packages and a sample:
+```text
+src/PromptRaster/                         # Core (provider-neutral; no MEAI reference)
+src/PromptRaster.MicrosoftExtensionsAI/   # Content factory + chat middleware
+tests/PromptRaster.Tests/
+tests/PromptRaster.MicrosoftExtensionsAI.Tests/
+samples/PromptRaster.ConsoleSample/
+```
 
-- **PromptRaster** — the core. No AI provider SDK dependencies; only `Microsoft.Extensions.*` abstractions and SkiaSharp.
-- **PromptRaster.MicrosoftExtensionsAI** — a thin content factory over the core that produces `Microsoft.Extensions.AI` content items.
-- **PromptRaster.ConsoleSample** — a runnable demo that renders sample prose for every provider and writes the PNGs to `output/<provider>/page-NNN.png`. No API key required.
-
-Internally, the core separates four small, individually testable concerns behind internal interfaces:
-
-1. **Classification** (`TextContentClassifier`) — cheap deterministic heuristics that detect JSON/XML (prefix check, then a real parse that never throws outward), YAML/INI configuration, source code, Markdown dominated by fenced code, CSV and pipe tables, stack traces, and identifier-heavy or punctuation-heavy content. Ordinary prose containing URLs or email addresses is still prose.
-2. **Layout** (`SkiaTextPageLayoutEngine`) — wraps text by measured pixel width (`SKFont.BreakText`), preserves paragraph and line breaks, avoids splitting words unless a single token is wider than a line, and paginates. Every page records the exact source range it represents; concatenating all ranges reconstructs the input byte-for-byte. Layout is decision input — no pixels are rendered at this stage.
-3. **Decision** (`PromptRasterizer`) — implements the algorithm above and produces a fully explained result.
-4. **Rendering** (`SkiaTextImageRenderer`) — draws the already-computed layout as anti-aliased black text on a white background and encodes grayscale PNG (small payloads, OCR-unaffected). Uses `SKTypeface.Default`, so no font file ships with the package.
-
-Significant design decisions:
-
-- **Density is measured, not estimated.** The layout runs first and the decision uses the real achieved characters-per-page, so wrapping behaviour, paragraph structure, and header space are all accounted for. There is no token-estimation cleverness anywhere.
-- **Source fidelity is an invariant, not a goal.** The layout engine's contract (verified by tests) is that page source ranges are contiguous, non-overlapping, and reconstruct the input exactly. Nothing is trimmed or normalised.
-- **Conservative by default.** Unknown providers, short text, structured content, low density, or too many pages all fall back to text. Text is always the safe answer; images are only used when the case is strong.
-- **Thread safety through statelessness.** Every service is immutable; SkiaSharp objects are created and disposed per call. All services register as singletons.
+The NuGet package id for the core remains `PromptRaster` (conceptually the Core package). It must not reference OpenAI, Azure OpenAI, Anthropic, or Microsoft.Extensions.AI.
 
 ## Building from source
 
@@ -243,30 +246,13 @@ dotnet test --configuration Release --no-build
 dotnet pack --configuration Release --no-build
 ```
 
-Run the sample:
+Run the sample (writes PNGs locally; no API key required):
 
 ```bash
 dotnet run --project samples/PromptRaster.ConsoleSample
 ```
 
-See [PUBLISHING.md](PUBLISHING.md) for how releases are published to NuGet.
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, project layout, and how to add classifier heuristics or provider thresholds.
-
-Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
-
-Quick start for contributors:
-
-```bash
-git clone https://github.com/kearns2000/PromptRaster.git
-cd PromptRaster
-dotnet build -c Release
-dotnet test -c Release
-```
-
-Open a pull request with tests for any behaviour change. CI runs build and test on every PR.
+See [PUBLISHING.md](PUBLISHING.md) for NuGet release steps and [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidance.
 
 ## License
 

@@ -10,23 +10,25 @@ namespace PromptRaster.Internal;
 
 /// <summary>
 /// The default <see cref="IPromptRasterizer"/>. Decision-making is kept separate
-/// from rendering: the text is first laid out into in-memory pages, and PNG data
-/// is only encoded after the decision to return images has been made.
+/// from rendering: the text is first evaluated by policy, then laid out into
+/// in-memory pages, and PNG data is only encoded after the decision to return
+/// images has been made.
 /// </summary>
 internal sealed class PromptRasterizer(
-    ITextContentClassifier classifier,
+    IRasterisationPolicy policy,
     ITextPageLayoutEngine layoutEngine,
     ITextImageRenderer renderer,
     IProviderThresholdResolver thresholdResolver,
+    IModelProfileProvider modelProfileProvider,
+    IPromptRasterCache cache,
     IOptions<PromptRasterOptions> options,
     ILogger<PromptRasterizer>? logger = null) : IPromptRasterizer
 {
     private static readonly PromptRasterRequest DefaultRequest = new();
 
-    // Logging is optional: hosts that have not called AddLogging still work.
     private readonly ILogger _logger = logger ?? NullLogger<PromptRasterizer>.Instance;
 
-    public ValueTask<PromptRasterResult> RasterizeAsync(
+    public async ValueTask<PromptRasterResult> RasterizeAsync(
         string text,
         AiProvider provider,
         PromptRasterRequest? request = null,
@@ -37,7 +39,9 @@ internal sealed class PromptRasterizer(
         ValidateRequest(request);
         cancellationToken.ThrowIfCancellationRequested();
 
-        var result = Rasterize(text, provider, request, cancellationToken);
+        using var activity = PromptRasterActivity.StartRasterizeActivity();
+
+        var result = await RasterizeAsyncCore(text, provider, request, cancellationToken).ConfigureAwait(false);
 
         PromptRasterizerLog.Decision(
             _logger,
@@ -48,206 +52,333 @@ internal sealed class PromptRasterizer(
             result.AverageCharactersPerPage,
             result.RequiredCharactersPerPage);
 
-        return new ValueTask<PromptRasterResult>(result);
+        PromptRasterActivity.RecordDecision(
+            activity,
+            result.Decision.Reason,
+            provider,
+            result.CharacterCount,
+            result.PageCount,
+            fellBack: result.Decision.Reason == PromptRasterDecisionReason.RenderingFailed);
+
+        return result;
     }
 
-    private PromptRasterResult Rasterize(
+    private async ValueTask<PromptRasterResult> RasterizeAsyncCore(
         string text,
         AiProvider provider,
         PromptRasterRequest request,
         CancellationToken cancellationToken)
     {
         var settings = options.Value;
-        var threshold = thresholdResolver.Resolve(provider, request);
-        var context = new DecisionContext(text, provider, request, threshold);
+        var threshold = ResolveThreshold(provider, request);
+        var profile = ResolveProfile(request.ModelId);
 
-        if (string.IsNullOrWhiteSpace(text))
+        if (request.ExcludeFromRasterisation)
         {
             return TextResult(
-                context,
-                PromptRasterDecisionReason.EmptyInput,
-                "The content was kept as text because the input is empty or whitespace-only.");
+                text,
+                threshold,
+                PromptRasterDecisionReason.ExplicitlyExcluded,
+                "The content was kept as text because it was explicitly excluded from rasterisation.");
         }
 
-        return request.Mode switch
-        {
-            PromptRasterMode.Never => TextResult(
-                context,
-                PromptRasterDecisionReason.RasterisationDisabled,
-                "The content was kept as text because rasterisation was disabled by PromptRasterMode.Never."),
-            PromptRasterMode.Always => RasterizeForced(context, settings, cancellationToken),
-            _ => RasterizeAuto(context, settings, cancellationToken),
-        };
-    }
+        var preLayoutCandidate = new RasterisationCandidate(
+            text,
+            provider,
+            request.ModelId,
+            request,
+            RequiredCharactersPerPage: threshold);
 
-    private PromptRasterResult RasterizeAuto(
-        DecisionContext context,
-        PromptRasterOptions settings,
-        CancellationToken cancellationToken)
-    {
-        var (text, provider, request, threshold) = context;
+        var preLayoutDecision = await policy.EvaluateAsync(preLayoutCandidate, cancellationToken)
+            .ConfigureAwait(false);
 
-        if (provider == AiProvider.Unknown)
+        if (!preLayoutDecision.ShouldRasterise)
         {
             return TextResult(
-                context,
-                PromptRasterDecisionReason.UnknownProvider,
-                "The content was kept as text because the provider is Unknown; " +
-                "automatic rasterisation requires a known provider.");
+                text,
+                threshold,
+                preLayoutDecision.Reason,
+                preLayoutDecision.Description ?? preLayoutDecision.Reason.ToString());
         }
 
-        if (text.Length < settings.MinimumTextLength)
+        if (request.Mode == PromptRasterMode.Always)
         {
-            return TextResult(
-                context,
-                PromptRasterDecisionReason.TextTooShort,
-                $"The content was kept as text because it is {Format(text.Length)} characters long, " +
-                $"below the configured minimum of {Format(settings.MinimumTextLength)}.");
+            return await RasterizeForcedAsync(text, provider, request, threshold, profile, cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        if (settings.DetectStructuredContent && !request.TreatAsProse)
+        try
         {
-            var classification = classifier.Classify(text);
+            var renderSettings = CreateRenderSettings(settings, request, profile);
+            var layout = layoutEngine.Layout(text, renderSettings, cancellationToken);
+            var pageCount = layout.Pages.Count;
+            var averageDensity = pageCount > 0 ? text.Length / (double)pageCount : 0;
 
-            if (classification != TextContentClassification.Prose)
+            var postLayoutCandidate = preLayoutCandidate with
+            {
+                PageCount = pageCount,
+                AverageCharactersPerPage = averageDensity,
+                RequiredCharactersPerPage = threshold,
+            };
+
+            var postLayoutDecision = await policy.EvaluateAsync(postLayoutCandidate, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!postLayoutDecision.ShouldRasterise)
             {
                 return TextResult(
-                    context,
-                    PromptRasterDecisionReason.UnsuitableContent,
-                    $"The content was kept as text because it appears to be {classification} content, " +
-                    "which is treated as accuracy-sensitive and unsuitable for automatic visual encoding.");
+                    text,
+                    threshold,
+                    postLayoutDecision.Reason,
+                    postLayoutDecision.Description ?? postLayoutDecision.Reason.ToString(),
+                    layout);
             }
+
+            var decision = new PromptRasterDecision
+            {
+                Reason = PromptRasterDecisionReason.Rasterised,
+                Description = postLayoutDecision.Description ??
+                    $"The content was rasterised into {Format(pageCount)} page(s).",
+            };
+
+            return await ImageResultAsync(text, provider, request, threshold, profile, decision, layout, renderSettings, cancellationToken)
+                .ConfigureAwait(false);
         }
-
-        var layout = layoutEngine.Layout(text, PromptRasterRenderSettings.Create(settings, request), cancellationToken);
-        var pageCount = layout.Pages.Count;
-        var maximumPages = Math.Min(request.MaximumPages ?? settings.MaximumPages, settings.AbsoluteMaximumPages);
-
-        if (pageCount > maximumPages)
+        catch (OperationCanceledException)
         {
+            throw;
+        }
+        catch (Exception) when (settings.FallbackToText)
+        {
+            PromptRasterActivity.RenderFailures.Add(1);
             return TextResult(
-                context,
-                PromptRasterDecisionReason.MaximumPageCountExceeded,
-                $"The content was kept as text because it would require {Format(pageCount)} pages, " +
-                $"exceeding the maximum of {Format(maximumPages)}.",
-                layout);
+                text,
+                threshold,
+                PromptRasterDecisionReason.RenderingFailed,
+                "The content was kept as text because layout or rendering failed and fallback to text is enabled.");
         }
-
-        var averageDensity = text.Length / (double)pageCount;
-
-        if (averageDensity < threshold)
-        {
-            return TextResult(
-                context,
-                PromptRasterDecisionReason.InsufficientCharacterDensity,
-                $"The content was kept as text because its average density was " +
-                $"{Format(averageDensity)} characters per page, below the {provider} threshold " +
-                $"of {Format(threshold)}.",
-                layout);
-        }
-
-        var decision = new PromptRasterDecision
-        {
-            Reason = PromptRasterDecisionReason.Rasterised,
-            Description =
-                $"The content was rasterised into {Format(pageCount)} page(s) because its average density " +
-                $"was {Format(averageDensity)} characters per page, at or above the {provider} threshold " +
-                $"of {Format(threshold)}.",
-        };
-
-        return ImageResult(context, decision, layout, cancellationToken);
     }
 
-    private PromptRasterResult RasterizeForced(
-        DecisionContext context,
-        PromptRasterOptions settings,
+    private async ValueTask<PromptRasterResult> RasterizeForcedAsync(
+        string text,
+        AiProvider provider,
+        PromptRasterRequest request,
+        int threshold,
+        ModelProfile? profile,
         CancellationToken cancellationToken)
     {
-        var (text, _, request, _) = context;
+        var settings = options.Value;
 
-        var layout = layoutEngine.Layout(text, PromptRasterRenderSettings.Create(settings, request), cancellationToken);
-        var pageCount = layout.Pages.Count;
-
-        if (pageCount > settings.AbsoluteMaximumPages)
+        try
         {
-            return TextResult(
-                context,
-                PromptRasterDecisionReason.MaximumPageCountExceeded,
-                $"The content was kept as text because it would require {Format(pageCount)} pages, " +
-                $"exceeding the absolute maximum of {Format(settings.AbsoluteMaximumPages)} " +
-                "that even forced rasterisation must respect.",
-                layout);
+            var renderSettings = CreateRenderSettings(settings, request, profile);
+            var layout = layoutEngine.Layout(text, renderSettings, cancellationToken);
+            var pageCount = layout.Pages.Count;
+
+            var forcedCandidate = new RasterisationCandidate(
+                text,
+                provider,
+                request.ModelId,
+                request,
+                PageCount: pageCount,
+                AverageCharactersPerPage: pageCount > 0 ? text.Length / (double)pageCount : 0,
+                RequiredCharactersPerPage: threshold);
+
+            var forcedDecision = await policy.EvaluateAsync(forcedCandidate, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (!forcedDecision.ShouldRasterise)
+            {
+                return TextResult(
+                    text,
+                    threshold,
+                    forcedDecision.Reason,
+                    forcedDecision.Description ?? forcedDecision.Reason.ToString(),
+                    layout);
+            }
+
+            var averageDensity = pageCount > 0 ? text.Length / (double)pageCount : 0;
+            var decision = new PromptRasterDecision
+            {
+                Reason = PromptRasterDecisionReason.ForcedRasterisation,
+                Description =
+                    $"Rasterisation was forced by PromptRasterMode.Always: {Format(pageCount)} page(s) " +
+                    $"at an average density of {Format(averageDensity)} characters per page.",
+            };
+
+            return await ImageResultAsync(text, provider, request, threshold, profile, decision, layout, renderSettings, cancellationToken)
+                .ConfigureAwait(false);
         }
-
-        var averageDensity = text.Length / (double)pageCount;
-
-        var decision = new PromptRasterDecision
+        catch (OperationCanceledException)
         {
-            Reason = PromptRasterDecisionReason.ForcedRasterisation,
-            Description =
-                $"Rasterisation was forced by PromptRasterMode.Always: {Format(pageCount)} page(s) " +
-                $"at an average density of {Format(averageDensity)} characters per page.",
-        };
-
-        return ImageResult(context, decision, layout, cancellationToken);
+            throw;
+        }
+        catch (Exception) when (settings.FallbackToText)
+        {
+            PromptRasterActivity.RenderFailures.Add(1);
+            return TextResult(
+                text,
+                threshold,
+                PromptRasterDecisionReason.RenderingFailed,
+                "The content was kept as text because layout or rendering failed and fallback to text is enabled.");
+        }
     }
 
-    private PromptRasterResult ImageResult(
-        DecisionContext context,
+    private async ValueTask<PromptRasterResult> ImageResultAsync(
+        string text,
+        AiProvider provider,
+        PromptRasterRequest request,
+        int threshold,
+        ModelProfile? profile,
         PromptRasterDecision decision,
         TextPageLayoutResult layout,
+        PromptRasterRenderSettings renderSettings,
         CancellationToken cancellationToken)
     {
-        var (text, provider, request, threshold) = context;
-        var renderSettings = PromptRasterRenderSettings.Create(options.Value, request);
+        var cacheKey = PromptRasterCacheKey.Create(text, renderSettings, profile);
 
-        var stopwatch = Stopwatch.StartNew();
-        var pages = new List<PromptRasterPage>(layout.Pages.Count);
-        long totalBytes = 0;
-
-        foreach (var pageLayout in layout.Pages)
+        if (cache.TryGet(cacheKey, out var cachedPages) && cachedPages is { Count: > 0 })
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            var clonedCachedPages = ClonePages(cachedPages);
 
-            var data = renderer.Render(pageLayout, renderSettings, cancellationToken);
-            totalBytes += data.Length;
-
-            pages.Add(new PromptRasterPage
+            return new PromptRasterResult
             {
-                PageNumber = pageLayout.PageNumber,
-                TotalPages = pageLayout.TotalPages,
-                Data = data,
-                MediaType = "image/png",
-                SourceStartIndex = pageLayout.SourceStartIndex,
-                SourceLength = pageLayout.SourceLength,
-                CharacterCount = pageLayout.SourceLength,
-            });
+                Encoding = PromptRasterEncoding.Images,
+                Decision = decision,
+                OriginalText = text,
+                SourceSha256 = ComputeSha256(text),
+                CharacterCount = text.Length,
+                PageCount = clonedCachedPages.Count,
+                AverageCharactersPerPage = text.Length / (double)clonedCachedPages.Count,
+                RequiredCharactersPerPage = threshold,
+                Pages = clonedCachedPages,
+            };
         }
 
-        stopwatch.Stop();
-        PromptRasterizerLog.PagesRendered(_logger, pages.Count, totalBytes, stopwatch.ElapsedMilliseconds, provider);
-
-        return new PromptRasterResult
+        try
         {
-            Encoding = PromptRasterEncoding.Images,
-            Decision = decision,
-            OriginalText = text,
-            SourceSha256 = ComputeSha256(text),
-            CharacterCount = text.Length,
-            PageCount = pages.Count,
-            AverageCharactersPerPage = pages.Count > 0 ? text.Length / (double)pages.Count : 0,
-            RequiredCharactersPerPage = threshold,
-            Pages = pages,
+            var stopwatch = Stopwatch.StartNew();
+            var pages = new List<PromptRasterPage>(layout.Pages.Count);
+            long totalBytes = 0;
+
+            foreach (var pageLayout in layout.Pages)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var data = renderer.Render(pageLayout, renderSettings, cancellationToken);
+                totalBytes += data.Length;
+
+                pages.Add(new PromptRasterPage
+                {
+                    PageNumber = pageLayout.PageNumber,
+                    TotalPages = pageLayout.TotalPages,
+                    Data = data,
+                    MediaType = "image/png",
+                    SourceStartIndex = pageLayout.SourceStartIndex,
+                    SourceLength = pageLayout.SourceLength,
+                    CharacterCount = pageLayout.SourceLength,
+                });
+            }
+
+            stopwatch.Stop();
+            PromptRasterActivity.RenderDurationMilliseconds.Record(stopwatch.Elapsed.TotalMilliseconds);
+            PromptRasterizerLog.PagesRendered(_logger, pages.Count, totalBytes, stopwatch.ElapsedMilliseconds, provider);
+
+            cache.Set(cacheKey, ClonePages(pages));
+
+            return new PromptRasterResult
+            {
+                Encoding = PromptRasterEncoding.Images,
+                Decision = decision,
+                OriginalText = text,
+                SourceSha256 = ComputeSha256(text),
+                CharacterCount = text.Length,
+                PageCount = pages.Count,
+                AverageCharactersPerPage = pages.Count > 0 ? text.Length / (double)pages.Count : 0,
+                RequiredCharactersPerPage = threshold,
+                Pages = pages,
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception) when (options.Value.FallbackToText)
+        {
+            PromptRasterActivity.RenderFailures.Add(1);
+            return TextResult(
+                text,
+                threshold,
+                PromptRasterDecisionReason.RenderingFailed,
+                "The content was kept as text because layout or rendering failed and fallback to text is enabled.",
+                layout);
+        }
+    }
+
+    private static IReadOnlyList<PromptRasterPage> ClonePages(IReadOnlyList<PromptRasterPage> pages)
+    {
+        var clones = new List<PromptRasterPage>(pages.Count);
+
+        foreach (var page in pages)
+        {
+            clones.Add(page with { Data = (byte[])page.Data.Clone() });
+        }
+
+        return clones;
+    }
+
+    private int ResolveThreshold(AiProvider provider, PromptRasterRequest request)
+    {
+        if (request.MinimumCharactersPerPage is int overrideThreshold)
+        {
+            return overrideThreshold;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.ModelId) &&
+            modelProfileProvider.TryGetProfile(request.ModelId, out var profile) &&
+            profile is not null)
+        {
+            return profile.MinimumCharactersPerPage;
+        }
+
+        return thresholdResolver.Resolve(provider, request);
+    }
+
+    private ModelProfile? ResolveProfile(string? modelId) =>
+        !string.IsNullOrWhiteSpace(modelId) &&
+        modelProfileProvider.TryGetProfile(modelId, out var profile)
+            ? profile
+            : null;
+
+    private static PromptRasterRenderSettings CreateRenderSettings(
+        PromptRasterOptions settings,
+        PromptRasterRequest request,
+        ModelProfile? profile)
+    {
+        if (profile is null)
+        {
+            return PromptRasterRenderSettings.Create(settings, request);
+        }
+
+        return new PromptRasterRenderSettings
+        {
+            ImageWidth = profile.ImageWidth > 0 ? profile.ImageWidth : settings.ImageWidth,
+            ImageHeight = profile.ImageHeight > 0 ? profile.ImageHeight : settings.ImageHeight,
+            HorizontalPadding = profile.HorizontalPadding >= 0 ? profile.HorizontalPadding : settings.HorizontalPadding,
+            VerticalPadding = profile.VerticalPadding >= 0 ? profile.VerticalPadding : settings.VerticalPadding,
+            FontSize = profile.FontSize > 0 ? profile.FontSize : settings.FontSize,
+            LineSpacingMultiplier = settings.LineSpacingMultiplier,
+            IncludePageHeader = request.IncludePageHeader,
         };
     }
 
     private static PromptRasterResult TextResult(
-        DecisionContext context,
+        string text,
+        int threshold,
         PromptRasterDecisionReason reason,
         string description,
         TextPageLayoutResult? layout = null)
     {
-        var (text, _, _, threshold) = context;
         var pageCount = layout?.Pages.Count ?? 0;
 
         return new PromptRasterResult
@@ -289,10 +420,4 @@ internal sealed class PromptRasterizer(
     private static string Format(int value) => value.ToString("N0", CultureInfo.InvariantCulture);
 
     private static string Format(double value) => value.ToString("N0", CultureInfo.InvariantCulture);
-
-    private sealed record DecisionContext(
-        string Text,
-        AiProvider Provider,
-        PromptRasterRequest Request,
-        int Threshold);
 }

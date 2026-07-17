@@ -32,9 +32,9 @@ dotnet run --project samples/PromptRaster.ConsoleSample
 ## Project layout
 
 ```text
-src/PromptRaster/                        # Core library (no AI provider SDKs)
-  Internal/                              # Classifier, layout engine, renderer, rasteriser
-src/PromptRaster.MicrosoftExtensionsAI/  # IChatClient content factory
+src/PromptRaster/                        # Core library (no AI provider SDKs, no MEAI)
+  Internal/                              # Classifier, policy, layout, renderer, rasteriser
+src/PromptRaster.MicrosoftExtensionsAI/  # Content factory + DelegatingChatClient middleware
 tests/PromptRaster.Tests/                # xUnit tests for the core
 tests/PromptRaster.MicrosoftExtensionsAI.Tests/
 samples/PromptRaster.ConsoleSample/

@@ -114,4 +114,40 @@ public class PromptRasterOptionsValidatorTests
 
         await act.Should().ThrowAsync<OptionsValidationException>();
     }
+
+    [Fact]
+    public void DuplicateModelProfileIds_Fail()
+    {
+        var result = _validator.Validate(null, new PromptRasterOptions
+        {
+            ModelProfiles =
+            [
+                new ModelProfile { ModelId = "gpt-test", Provider = AiProvider.OpenAI },
+                new ModelProfile { ModelId = "GPT-TEST", Provider = AiProvider.OpenAI },
+            ],
+        });
+
+        result.Failed.Should().BeTrue();
+        result.FailureMessage.Should().Contain("duplicated");
+    }
+
+    [Fact]
+    public void ModelProfileWithInvalidMaximumPages_Fails()
+    {
+        var result = _validator.Validate(null, new PromptRasterOptions
+        {
+            ModelProfiles =
+            [
+                new ModelProfile
+                {
+                    ModelId = "gpt-test",
+                    Provider = AiProvider.OpenAI,
+                    MaximumPages = 0,
+                },
+            ],
+        });
+
+        result.Failed.Should().BeTrue();
+        result.FailureMessage.Should().Contain(nameof(ModelProfile.MaximumPages));
+    }
 }

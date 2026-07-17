@@ -90,9 +90,63 @@ internal sealed class PromptRasterOptionsValidator : IValidateOptions<PromptRast
         ValidateThreshold(failures, nameof(options.GeminiMinimumCharactersPerPage), options.GeminiMinimumCharactersPerPage);
         ValidateThreshold(failures, nameof(options.AnthropicMinimumCharactersPerPage), options.AnthropicMinimumCharactersPerPage);
 
+        ValidateModelProfiles(failures, options);
+
         return failures.Count > 0
             ? ValidateOptionsResult.Fail(failures)
             : ValidateOptionsResult.Success;
+    }
+
+    private static void ValidateModelProfiles(List<string> failures, PromptRasterOptions options)
+    {
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < options.ModelProfiles.Count; i++)
+        {
+            var profile = options.ModelProfiles[i];
+            var label = $"{nameof(options.ModelProfiles)}[{i}]";
+
+            if (profile is null)
+            {
+                failures.Add($"{label} must not be null.");
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(profile.ModelId))
+            {
+                failures.Add($"{label}.{nameof(profile.ModelId)} must not be empty.");
+            }
+            else if (!seenIds.Add(profile.ModelId))
+            {
+                failures.Add($"{label}.{nameof(profile.ModelId)} '{profile.ModelId}' is duplicated.");
+            }
+
+            if (profile.MaximumPages < 1)
+            {
+                failures.Add($"{label}.{nameof(profile.MaximumPages)} must be at least 1.");
+            }
+
+            if (profile.MinimumCharactersPerPage < MinimumThreshold)
+            {
+                failures.Add(
+                    $"{label}.{nameof(profile.MinimumCharactersPerPage)} must be at least {MinimumThreshold}.");
+            }
+
+            if (profile.ImageWidth <= 0 || profile.ImageHeight <= 0)
+            {
+                failures.Add($"{label} image dimensions must be positive.");
+            }
+
+            if (profile.FontSize < MinimumSafeFontSize)
+            {
+                failures.Add($"{label}.{nameof(profile.FontSize)} must be at least {MinimumSafeFontSize}.");
+            }
+
+            if (profile.HorizontalPadding < 0 || profile.VerticalPadding < 0)
+            {
+                failures.Add($"{label} padding values must not be negative.");
+            }
+        }
     }
 
     private static void ValidateThreshold(List<string> failures, string propertyName, int value)
