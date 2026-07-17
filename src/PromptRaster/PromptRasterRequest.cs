@@ -23,4 +23,16 @@ public sealed record PromptRasterRequest
 
     /// <summary>Overrides the provider's default minimum characters-per-page threshold for this request.</summary>
     public int? MinimumCharactersPerPage { get; init; }
+
+    /// <summary>
+    /// Optional provider-specific model identifier used for <see cref="ModelProfile"/> lookup.
+    /// When supplied, automatic rasterisation requires a registered and enabled profile.
+    /// </summary>
+    public string? ModelId { get; init; }
+
+    /// <summary>
+    /// When <see langword="true"/>, the content is treated as explicitly excluded from rasterisation
+    /// and remains ordinary text.
+    /// </summary>
+    public bool ExcludeFromRasterisation { get; init; }
 }

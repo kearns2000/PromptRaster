@@ -1,4 +1,3 @@
-using System.Globalization;
 using Microsoft.Extensions.AI;
 
 namespace PromptRaster.MicrosoftExtensionsAI;
@@ -30,16 +29,7 @@ internal sealed class PromptRasterContentFactory(IPromptRasterizer rasterizer) :
             return contents;
         }
 
-        contents.Add(new TextContent(string.Create(
-            CultureInfo.InvariantCulture,
-            $"The document is attached as {result.PageCount} PNG image page(s). " +
-            $"Read every page completely, in numerical page order, starting at page 1.")));
-
-        foreach (var page in result.Pages.OrderBy(static p => p.PageNumber))
-        {
-            contents.Add(new DataContent(page.Data, page.MediaType));
-        }
-
+        contents.AddRange(PromptRasterPageInstructions.ToImageContents(result));
         return contents;
     }
 }

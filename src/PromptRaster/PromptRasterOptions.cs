@@ -55,4 +55,25 @@ public sealed class PromptRasterOptions
     /// (JSON, code, tables, and so on) and keep it as text.
     /// </summary>
     public bool DetectStructuredContent { get; set; } = true;
+
+    /// <summary>
+    /// Whether to run conservative exact-content heuristics (secrets, hashes, GUIDs,
+    /// paths, dense numeric data) and keep matches as text. Heuristics are not a
+    /// complete security control.
+    /// </summary>
+    public bool DetectExactContent { get; set; } = true;
+
+    /// <summary>
+    /// When <see langword="true"/>, layout or PNG rendering failures fall back to
+    /// ordinary text instead of throwing. Policy rejections always return text results
+    /// from <see cref="IPromptRasterizer"/>; chat-pipeline strict behaviour is controlled
+    /// separately by <c>PromptRasterChatClientOptions.StrictMode</c>.
+    /// </summary>
+    public bool FallbackToText { get; set; } = true;
+
+    /// <summary>
+    /// Optional model profiles. When a request supplies a <see cref="PromptRasterRequest.ModelId"/>,
+    /// automatic rasterisation requires a matching enabled profile.
+    /// </summary>
+    public IList<ModelProfile> ModelProfiles { get; set; } = [];
 }

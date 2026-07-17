@@ -3,8 +3,8 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackageId>PromptRaster</PackageId>
-    <Description>Converts long plain-text prose into OCR-friendly PNG pages when doing so is likely to use fewer AI input tokens than sending the raw text. Uses conservative provider-level character-density heuristics and never alters or discards the source content.</Description>
-    <PackageTags>ai;llm;tokens;prompt;image;png;rasterize;openai;anthropic;gemini;azure-openai;skiasharp</PackageTags>
+    <Description>A .NET-native, policy-driven visual context encoder. Renders bulky, stable text as OCR-friendly PNG pages for multimodal models while keeping precise or sensitive content as ordinary text. Provider-neutral core with no Microsoft.Extensions.AI dependency.</Description>
+    <PackageTags>ai;llm;tokens;prompt;image;png;rasterize;visual-context;skiasharp;dotnet</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageIcon>icon.png</PackageIcon>
     <EnablePackageValidation>true</EnablePackageValidation>
